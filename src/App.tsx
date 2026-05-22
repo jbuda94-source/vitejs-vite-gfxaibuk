@@ -1,6 +1,25 @@
 import { useState } from "react";
 
-const VinylRecord = ({ spinning }) => (
+interface VinylProps {
+  spinning: boolean;
+}
+
+interface Track {
+  title: string;
+  artist: string;
+  bpm: number | null;
+  key?: string;
+  year?: string;
+  vibe?: string;
+}
+
+interface TrackCardProps {
+  track: Track;
+  index: number;
+  visible: boolean;
+}
+
+const VinylRecord = ({ spinning }: VinylProps) => (
   <div style={{
     width: 110, height: 110, borderRadius: "50%", flexShrink: 0,
     background: "conic-gradient(from 0deg, #111 0deg, #1a1a1a 10deg, #111 20deg, #1a1a1a 30deg, #111 40deg, #1a1a1a 50deg, #111 60deg, #1a1a1a 70deg, #111 80deg, #1a1a1a 90deg, #111 100deg, #1a1a1a 110deg, #111 120deg, #1a1a1a 130deg, #111 140deg, #1a1a1a 150deg, #111 160deg, #1a1a1a 170deg, #111 180deg, #1a1a1a 190deg, #111 200deg, #1a1a1a 210deg, #111 220deg, #1a1a1a 230deg, #111 240deg, #1a1a1a 250deg, #111 260deg, #1a1a1a 270deg, #111 280deg, #1a1a1a 290deg, #111 300deg, #1a1a1a 310deg, #111 320deg, #1a1a1a 330deg, #111 340deg, #1a1a1a 350deg, #111 360deg)",
@@ -20,7 +39,7 @@ const VinylRecord = ({ spinning }) => (
 
 const ACCENT_COLORS = ["#f5c842", "#e05c5c", "#5ce0a0", "#5cb8e0", "#e05cc4"];
 
-const TrackCard = ({ track, index, visible }) => {
+const TrackCard = ({ track, index, visible }: TrackCardProps) => {
   const accent = ACCENT_COLORS[index % ACCENT_COLORS.length];
   return (
     <div>
@@ -69,11 +88,10 @@ const TrackCard = ({ track, index, visible }) => {
 
 const SYSTEM_PROMPT = `You are a crate digging oracle — a legendary record store expert and DJ with encyclopedic knowledge of music across all eras and genres.
 
-When given a song and artist, use web search to find and verify 5 REAL tracks that actually exist, with similar vibe, energy, BPM range, genre, or sonic aesthetic.
+When given a song and artist, recommend 5 REAL tracks that actually exist, with similar vibe, energy, BPM range, genre, or sonic aesthetic.
 
 CRITICAL RULES:
-- ONLY recommend tracks that 100% verifiably exist. Use web search to confirm each one.
-- NEVER invent or hallucinate song titles or artist names. If unsure, search first.
+- ONLY recommend tracks that 100% verifiably exist. Never invent or hallucinate song titles or artist names.
 - Never give the same 5 recommendations twice — use the session seed to vary picks.
 - Mix well-known and obscure real records. Lean toward obscure but verified.
 - Vary the era. Consider BPM proximity, key, emotional vibe.
@@ -90,9 +108,9 @@ export default function CrateDigger() {
   const [song, setSong] = useState("");
   const [artist, setArtist] = useState("");
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState(null);
+  const [results, setResults] = useState<Track[] | null>(null);
   const [visible, setVisible] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [searchLabel, setSearchLabel] = useState("");
   const [status, setStatus] = useState("");
 
@@ -107,93 +125,53 @@ export default function CrateDigger() {
 
     try {
       const seed = Math.random().toString(36).slice(2, 8);
-      const userPrompt = `Find 5 real, verified tracks similar to "${song.trim()}" by ${artist.trim()}. Use web search to confirm each track exists before recommending it. Seed: ${seed}`;
+      const userPrompt = `Find 5 real verified tracks similar to "${song.trim()}" by ${artist.trim()}. Seed: ${seed}`;
 
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 4000,
+          max_tokens: 2000,
           system: SYSTEM_PROMPT,
-          tools: [
-            {
-              type: "web_search_20250305",
-              name: "web_search"
-            }
-          ],
           messages: [{ role: "user", content: userPrompt }]
         })
       });
 
       const rawText = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 300)}`);
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 300)}`);
-      }
-
-      let envelope;
-      try {
-        envelope = JSON.parse(rawText);
-      } catch (e) {
-        throw new Error(`Could not parse API response: ${rawText.slice(0, 200)}`);
-      }
-
+      const envelope = JSON.parse(rawText);
       setStatus("Flipping through records...");
 
-      // The model may have done tool use — find the final text block
-      const contentBlocks = envelope.content || [];
-
-      // Get all text blocks and join them
+      const contentBlocks: { type: string; text?: string }[] = envelope.content || [];
       const textContent = contentBlocks
-        .filter(b => b.type === "text")
-        .map(b => b.text)
+        .filter((b) => b.type === "text")
+        .map((b) => b.text || "")
         .join("")
         .trim();
 
-      if (!textContent) {
-        // If stop_reason is tool_use, we need to handle the agentic loop
-        // For simplicity, extract any JSON we can find from the raw response
-        const jsonMatch = rawText.match(/\{"picks"[\s\S]*?\}\s*\]/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0] + "}");
-          setResults(parsed.picks);
-          setTimeout(() => setVisible(true), 80);
-          setStatus("");
-          return;
-        }
-        throw new Error(`No text returned. Stop reason: ${envelope.stop_reason}. Blocks: ${contentBlocks.map(b=>b.type).join(", ")}`);
-      }
+      if (!textContent) throw new Error(`No text returned. Stop reason: ${envelope.stop_reason}`);
 
-      // Strip markdown fences if present
       const cleaned = textContent
         .replace(/^```json\s*/i, "")
         .replace(/^```\s*/i, "")
         .replace(/\s*```$/i, "")
         .trim();
 
-      // Extract JSON object
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error(`No JSON found in response: ${cleaned.slice(0, 200)}`);
-      }
+      if (!jsonMatch) throw new Error(`No JSON found in: ${cleaned.slice(0, 200)}`);
 
-      let parsed;
-      try {
-        parsed = JSON.parse(jsonMatch[0]);
-      } catch (e) {
-        throw new Error(`JSON parse error: ${e.message}`);
-      }
-
-      if (!Array.isArray(parsed.picks) || parsed.picks.length === 0) {
-        throw new Error(`No picks in response`);
-      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(parsed.picks) || parsed.picks.length === 0) throw new Error("No picks in response");
 
       setResults(parsed.picks);
       setTimeout(() => setVisible(true), 80);
       setStatus("");
     } catch (e) {
-      setError(e.message);
+      setError(e instanceof Error ? e.message : String(e));
       setStatus("");
     } finally {
       setLoading(false);
@@ -205,14 +183,13 @@ export default function CrateDigger() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:0.8} }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         input { outline: none; }
         input::placeholder { color: #444; }
       `}</style>
 
       <div style={{ maxWidth: 660, margin: "0 auto", padding: "56px 24px 80px" }}>
-
-        {/* Header */}
         <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 52 }}>
           <VinylRecord spinning={loading} />
           <div>
@@ -227,7 +204,6 @@ export default function CrateDigger() {
           </div>
         </div>
 
-        {/* Input */}
         <div style={{
           border: "1px solid rgba(245,200,66,0.2)", borderRadius: 4,
           background: "rgba(245,200,66,0.02)", marginBottom: 10, overflow: "hidden"
@@ -275,18 +251,13 @@ export default function CrateDigger() {
           {loading ? "⟳  DIGGING..." : "DIG THE CRATES"}
         </button>
 
-        {/* Status */}
         {status && (
           <div style={{
-            textAlign: "center", fontSize: 9, color: "#f5c842", opacity: 0.5,
+            textAlign: "center", fontSize: 9, color: "#f5c842",
             letterSpacing: "0.2em", marginBottom: 24, animation: "pulse 1.5s ease infinite"
-          }}>
-            <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:0.8} }`}</style>
-            {status}
-          </div>
+          }}>{status}</div>
         )}
 
-        {/* Error */}
         {error && (
           <div style={{
             background: "rgba(224,92,92,0.08)", border: "1px solid rgba(224,92,92,0.2)",
@@ -298,13 +269,9 @@ export default function CrateDigger() {
           </div>
         )}
 
-        {/* Results */}
         {results && (
           <div style={{ marginTop: 16 }}>
-            <div style={{
-              display: "flex", justifyContent: "space-between",
-              marginBottom: 16, fontSize: 9, letterSpacing: "0.15em"
-            }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, fontSize: 9, letterSpacing: "0.15em" }}>
               <span style={{ color: "#666" }}>SIMILAR TO: <span style={{ color: "#999" }}>{searchLabel}</span></span>
               <span style={{ color: "#f5c842", opacity: 0.4 }}>{results.length} PICKS</span>
             </div>
